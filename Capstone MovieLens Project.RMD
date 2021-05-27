@@ -1,0 +1,1026 @@
+---
+title: "HarvardX_PH125.9x_Capstone_MovieLens_Project"
+author: "Janalin Black"
+date: "5/21/2021"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.align = 'center',warning = FALSE, message = FALSE)
+```
+
+# 1. Introduction
+
+### 1.1 Assignment
+
+The purpose of this project is to train a machine learning algorithm to predict movie ratings. The expectation is to improve on the data analysis strategies used within this course series related to recommendation systems. Specifically, the goal is to go beyond a recommendation system that includes a regularized model with movie and user effects. This machine learning algorithm uses the typical error loss, residual mean squared error (RMSE), on a test set where success is achieved when the final RMSE is at or below .86490.
+
+### 1.2 DataSet
+
+The movie recommendation system is created using the [MovieLens dataset](https://grouplens.org/datasets/movielens/latest/) found in the dslabs package. For ease of computation, the [10M version of the MovieLens dataset](https://grouplens.org/datasets/movielens/10m/) is used. Assignment directions included code that split the 10M MovieLens data into two datasets, edx and validation. The edx dataset is used to train and test the movie ratings predictor and the validation dataset is used to evaluate the RMSE of the final algorithm.
+
+Because the validation dataset is only used to evaluate the final predictive model, the edx dataset is divided into separate test and train sets to design and test potential predictive models with the test set including 10% of the edx dataset.
+
+```{r, include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(tidyr)) install.packages("tidyr")
+if(!require(stringr)) install.packages("stringr")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(gridExtra)) install.packages("gridExtra")
+if(!require(dslabs)) install.packages("dslabs")
+if(!require(data.table)) install.packages("data.table")
+if(!require(ggrepel)) install.packages("ggrepel")
+if(!require(ggthemes)) install.packages("ggthemes")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(gridExtra)
+library(dslabs)
+library(ggrepel)
+library(ggthemes)
+library('scales')
+library(readxl)
+library(kableExtra)
+library(knitr)
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+#end of class generated code
+
+#Separate edx into train and test with split at 10% for test set
+#This step complies with not using Validation dataset until final RSME result
+
+set.seed(1, sample.kind="Rounding")
+test_index_test <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+train <- edx[-test_index_test,]
+temp_1 <- edx[test_index_test,]
+
+# Make sure userId and movieId in test set are also in train set
+
+test <- temp_1 %>% 
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+
+# Add rows removed from test set back into train set
+
+removed_1 <- anti_join(temp_1, test)
+train <- rbind(train, removed_1)
+
+# Make sure userId and movieId in validation set are also in train set
+# test set is kept separate to avoid over training
+
+validation <- temp_1 %>% 
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+
+#delete unnecessary objects
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed,
+   test_index_test, temp_1, removed_1)
+
+
+```
+### 1.3 Key Steps to Predictive Model
+The process in creating the final predictive model includes analyzing the train dataset for potential predictors beyond movie and user effects. Modeling is accomplished using the train and test sets and a final RMSE number is produced using the validation data as the final hold-out dataset. 
+
+The successful predictive model expands movie and user predictors to include separate genre effects. Additionally, regularization is used on all predictors to improve the overall accuracy and achieve successful RMSE numbers.
+
+
+# 2. Methods and Analysis
+
+### 2.1 Data Cleaning
+The initial review of the edx dataset shows 6 columns and over 9 million observations with no missing values.  For all separated datasets, the timestamp column needs to be converted to readable form and separate columns created for month, day, hour, and year. The movie title also includes release year and should be divided into two columns. The genres column includes several classifications (e.g. comedy, drama, sci-fi) per row; it is arguable that each group of genre combinations is a category and therefore, unique. However, it is also plausible that each classification is unique and should be separated for better predictive potential. Because of this, separate datasets will be created for train, test, and validation datasets with genre classifications separated into separate rows. Predictive model exploration will include training on both sets of data.
+
+
+#### Original data prior to cleaning
+
+```{r, echo=FALSE}
+head(edx)
+```
+```{r, echo=FALSE}
+#Convert timestamp into readable format for train, test, and validation sets
+
+class(train$timestamp) <- c('POSIXt','POSIXct')
+class(test$timestamp) <- c('POSIXt','POSIXct')
+class(validation$timestamp) <- c('POSIXt','POSIXct')
+
+#Extract year, month,and hour from timestamp
+
+#train dataset
+train$rateYear <- format(train$timestamp,"%Y")
+train$rateMonth <- format(train$timestamp,"%m")
+train$rateHour <- format(train$timestamp,"%H")
+
+#test dataset
+test$rateYear <- format(test$timestamp,"%Y")
+test$rateMonth <- format(test$timestamp,"%m")
+test$rateHour <- format(test$timestamp,"%H")
+
+#validation dataset
+validation$rateYear <- format(validation$timestamp,"%Y")
+validation$rateMonth <- format(validation$timestamp,"%m")
+validation$rateHour <- format(validation$timestamp,"%H")
+
+#Separate release year from title
+
+#train dataset
+train <- train %>%
+  mutate(title = str_trim(title),
+         title = str_sub(title, end = -2)) %>%
+  separate(title,c("movieTitle", "movieYear"), "\\((?=[^\\(]+$)")
+
+#test dataset
+test <- test %>%
+  mutate(title = str_trim(title),
+         title = str_sub(title, end = -2)) %>%
+  separate(title,c("movieTitle", "movieYear"), "\\((?=[^\\(]+$)")
+
+#validation dataset
+validation <- validation %>%
+  mutate(title = str_trim(title),
+         title = str_sub(title, end = -2)) %>%
+  separate(title,c("movieTitle", "movieYear"), "\\((?=[^\\(]+$)")
+
+#remove unnecessary columns from test,train, and validation datasets
+
+test <- test %>% select(userId, movieId, rating, movieTitle,
+                        movieYear, genres, rateYear,rateMonth, rateHour)
+train <- train %>% select(userId, movieId, rating, movieTitle,
+                          movieYear, genres, rateYear,rateMonth, rateHour)
+validation <- validation %>% select(userId, movieId, rating, movieTitle,
+                                    movieYear, genres, rateYear,rateMonth, rateHour)
+
+#Separate each genre into rows
+
+train_genre <- train %>% separate_rows(genres,sep = "\\|")
+test_genre <- test %>% separate_rows(genres, sep = "\\|")
+validation_genre <- validation %>% separate_rows(genres, sep = "\\|")
+```
+
+
+
+#### Wrangled dataset with combined genres
+
+This method results in a dataset with the same number of rows as the original.
+
+```{r, echo=FALSE}
+train_pretty <- head(train) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                latex_options="scale_down",
+                position = "left",
+                font_size = 8)
+train_pretty
+```
+
+#### Wrangled dataset with genres separated into rows
+
+This method duplicates userID/movieId combinations increasing the total number of rows in the dataset.
+
+```{r, echo=FALSE}
+
+train_pretty_genre <- head(train_genre) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                position = "left",
+                full_width = FALSE,
+                font_size = 11)
+train_pretty_genre
+
+#This is used to calculate rating numbers in text below 
+
+numbers <- test %>% summarize(n_movies = n_distinct(movieId),
+                   n_users = n_distinct(userId))
+
+#Change number of digits in global R
+options(digits = 3) 
+```
+
+### 2.2 Data Exploration and Visualization
+
+A review of the rating column shows there are `r length(unique(test$rating))` different rating scores between `r min(unique(test$rating))` and `r max(unique(test$rating))` with the median at `r median(test$rating)` and mean at `r mean(test$rating)`.  From this we see the random chance of predicting the correct rating is `r label_percent()(1/length(unique(test$rating)))`. Additionally, there are `r numbers$n_movies` movies rated by `r numbers$n_users` users. 
+
+#### 2.2a The Movies 
+
+Further exploration of ratings shows that many movies are rated fewer than 5 times and only some movies are rated over 100 times. Because many movies have few ratings, regularization should be incorporated to penalize estimates that are formed using small samples.  
+```{r, echo=FALSE}
+test %>% count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(binwidth= .3, color = "black",
+                 fill = "darkseagreen",
+                 show.legend = FALSE) +
+  scale_x_log10() +
+  theme(plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Number of Reviews",
+    y = "Number of Movies",
+    title = paste(
+      "Movie Ratings"
+    ) 
+  )
+```
+\newpage
+
+#### 2.2b The Users
+
+A review of user rating behavior shows most users rate fewer than 100 movies and the majority rate fewer than 10. Regularization should be considered in user effect to account for many users giving few ratings.
+
+```{r, echo=FALSE}
+test %>% count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(binwidth= .3, color = "black", fill = "darkseagreen",
+                 show.legend = FALSE) +
+  scale_x_log10() +
+  theme(plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Number of Reviews",
+    y = "Number of Users",
+    title = paste(
+      "User Ratings"
+    ) 
+  )
+
+count_genres <- train_genre %>%
+  group_by(genres) %>%
+  count(genres) %>%
+  nrow()
+```
+\newpage
+
+#### 2.2c The Genre
+
+Another potential predictor is the genre of the movie. The following plots show evidence of differences in ratings based on genre. The first plot indicates genre categories that include *drama* are rated the highest. However, when genre categories are split, *drama* only ranks sixth among `r count_genres` classifications. Modeling on potential predictors should include analysis with genre categories as well as individual genre classifications.
+```{r, echo=FALSE}
+#This is here to get the following header to render correctly.
+```
+
+
+#### Plot of unsplit genres
+
+
+```{r, echo=FALSE}
+unsplit_genres <- train %>%
+  group_by(genres) %>%
+  summarize(n = n(),
+            Average = mean(rating),
+            se = sd(rating)/sqrt(length(rating))) %>%
+  filter(n > 90000)%>%
+  mutate(Genres = reorder(genres, Average)) %>%
+  ggplot(aes(Genres, Average, ymin = Average- 2*se, ymax = Average + 2*se)) +
+  geom_point(color = "#006633") +
+  geom_errorbar(color = "#009933")+
+  theme(axis.text.x= element_text(angle = 90, hjust = 1),
+        plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "",
+    y = "Average Rating",
+    title = paste(
+      "Average Rating for Movies by Unsplit Genres"
+    ) 
+  )
+unsplit_genres
+```
+
+\newpage
+
+#### Plot of split genres
+
+
+```{r, echo=FALSE}
+split_genre <- train_genre %>%
+  group_by(genres) %>%
+  summarize(n = n(),
+            avg = mean(rating),
+            se = sd(rating)/sqrt(length(rating))) %>%
+  filter(n > 100)%>%
+  mutate(genres = reorder(genres, avg)) %>%
+  ggplot(aes(genres, avg, ymin = avg- 2*se, ymax = avg + 2*se)) +
+  geom_point(color = "#006633") +
+  geom_errorbar(color = "#009933")+
+  theme(axis.text.x= element_text(angle = 90, hjust = 1),
+        plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "",
+    y = "Average Rating",
+    title = paste(
+      "Average Rating for Movies by Each Genre"
+    ) 
+  )
+split_genre
+```
+
+\newpage
+#### 2.2d Other Potential Predictors
+This analysis also includes other potential predictors not included in the final predictive model. These are discussed in section 4.3, Recommendations for Future Study. 
+
+The following plot suggests a relationship between the year a movie was released and rating. Ratings appear to decrease over years. Loess smoothing was included to show a possible multiple regression approach for movie release year as a predictor. There seems to be predictive power in the year the movie was released, except the conditional probability is not linear.
+
+```{r, echo=FALSE, message=FALSE}
+train$movieYear <- as.Date(train$movieYear, format='%Y')
+movie_year <- train %>% 
+  group_by(movieYear) %>%
+  summarize(n = n(),
+            avg = mean(rating))%>%
+  filter(n > 200)%>%
+  ggplot(aes(x=as.numeric(movieYear), y=avg)) +
+  geom_point(color="#006633") +
+  geom_smooth(method="loess", span = .15, method.args = list(degree=1)) +
+  scale_x_discrete(breaks = seq(1918,2008,10)) +
+  theme(axis.text.x= element_text(angle = 90, hjust = 1),
+        plot.title = element_text(color = "#660033",hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Years 1918-2008",
+    y = "Average Rating",
+    title = paste("Movie Release Year and Rating"
+    ) 
+  )
+movie_year
+
+rate_year_avg <- train %>%
+  group_by(rateYear) %>%
+  summarize(n = n(),
+            avg = mean(rating))%>%
+  filter(n > 50)
+```
+\newpage
+There also seems to be a relationship between the year a movie was rated and the rating. Similar to the year a movie was released, overall ratings decreasing over years. For 1996-2009, the lowest average rating was in
+`r rate_year_avg[which.min(rate_year_avg$avg),1]` with a rating of `r min(rate_year_avg$avg)` and the highest was in `r rate_year_avg[which.max(rate_year_avg$avg),1]` with a rating of `r max(rate_year_avg$avg)`.
+
+```{r, echo=FALSE}
+rate_year <- train %>%
+  group_by(rateYear) %>%
+  summarize(n = n(),
+            avg = mean(rating))%>%
+  filter(n > 50)%>%
+  ggplot(aes(x=rateYear, y=avg, group = 1)) +
+  geom_point(color="#006633") +
+  geom_line(color="#006633")+
+  theme(axis.text.x= element_text(angle = 90,hjust = 1),
+        plot.title = element_text(color = "#660033",hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Years 1996-2009",
+    y = "Average Rating",
+    title = paste("Year Rated and Rating"
+    ) 
+  )
+rate_year
+
+set.seed(1, sample.kind="Rounding")
+train_sample <- train %>% sample_n(500000)
+```
+\newpage
+A boxplot of the year of ratings show equal boxes for all years. Although, median rates, highlighted in green, are at 75% for 1997-2002.
+
+```{r, echo=FALSE}
+year_rate_plot <- filter(train_sample,rateYear > 1996) %>%
+  ggplot(aes(x = rateYear, y = rating)) + 
+  geom_boxplot()+
+  theme(axis.text.x= element_text(),
+        plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Year",
+    y = "Rating",
+    title = paste(
+      "Year of Review and Rating"
+    ) 
+  )
+
+dat <- ggplot_build(year_rate_plot)$data[[1]]
+
+year_rate_plot + geom_segment(data=dat, aes(x=xmin, xend=xmax,
+                                            y=middle, yend=middle),
+                              colour="darkgreen", size=1.5)
+
+```
+\newpage
+Further exploration of ratings by year of review show a left skewed distribution for years before 2003. For predictive analysis, a normalizing transformation might be considered.
+
+```{r, echo=FALSE}
+year_histo <- filter(train, rateYear%in%c(1997,1999,2001,2003,2005,2007)) %>%
+  ggplot(aes(rating)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "darkseagreen") +
+  facet_grid(. ~ rateYear)+
+  theme(plot.title = element_text(color = "#660033", hjust = 1),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Rating",
+    y = "Count",
+    title = paste(""))
+year_histo
+```
+\newpage
+The following boxplot explores the hour of day and differences in ratings. The middle 50% of all boxplots from a sample of the train set are quite similar. However, median ratings remain consistent for several hours, fluctuating between 3.5 and 4.
+
+```{r, echo=FALSE}
+hour_box <- train_sample %>%
+  ggplot(aes(x = rateHour, y = rating)) + 
+  geom_boxplot()+
+  theme(axis.text.x= element_text(),
+        plot.title = element_text(color = "#660033", hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Hour of Day",
+    y = "Rating",
+    title = paste(
+      "Hour of Review and Rating"
+    ) 
+  )
+
+dat_2 <- ggplot_build(hour_box)$data[[1]]
+
+hour_box + geom_segment(data=dat_2, aes(x=xmin, xend=xmax,
+                                            y=middle, yend=middle),
+                              colour="darkgreen", size=1.5)
+```                           
+\newpage
+Further exploration on hour of day as a potential predictor shows a plot with mean and median ratings by hour of day. In most instances the mean is lower than the median. This indicates a left or negatively skewed data. The most common values in the distribution might not be near the mean. Additionally, this skewed data can affect which types of analyses to perform.
+
+```{r, echo=FALSE}
+r_hour <- train %>%
+  select(rateHour, rating) %>%
+  group_by(rateHour) %>%
+  summarize(mean = mean(rating), median = median(rating)) %>%
+  arrange(desc(mean))
+#combining mean and median data into one plot
+r_hour2 <- melt(data = r_hour, id.vars = "rateHour")
+r_hour2 <- r_hour2 %>% mutate(value = format(round(value, 2), nsmall = 2))
+ggplot(data = r_hour2, aes(x = rateHour, y = value,
+                           colour = variable, group = 1)) +
+  geom_point() +
+  theme(axis.text.x= element_text(angle = 90,hjust = 1),
+      axis.title.x = element_text(color = "#000066"),
+      axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Hour of Day",
+    y = "Rating"
+  )
+```
+\newpage
+One final plot is included to show that the month of rating may be a potential predictor. This plot shows higher average ratings for months 10-12.
+
+```{r, echo=FALSE}
+rate_month <- train %>%
+  group_by(rateMonth) %>%
+  summarize(n = n(),
+            avg = mean(rating))%>%
+  ggplot(aes(x=rateMonth, y=avg)) +
+  geom_point(color="#006633") +
+  #geom_smooth() +
+  theme(axis.text.x= element_text(hjust = 1),
+        plot.title = element_text(color = "#660033",hjust = .5),
+        axis.title.x = element_text(color = "#000066"),
+        axis.title.y = element_text(color = "#000066")) +
+  labs(
+    x = "Month",
+    y = "Average Rating",
+    title = paste(
+      "Month Reviewed and Rating"
+    ) 
+  )
+rate_month
+
+#Increase decimal places for RMSE precision
+options(pillar.sigfig = 10)
+
+```
+
+### 2.3 Analysis of the Data
+
+A standard way to measure the error in a predictive model is with Root Mean Square Error (RMSE). This is the function to calculate RMSE that will be used for predictive analysis.
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+```{r, echo=FALSE}
+mu <- mean(train$rating)
+```
+
+
+
+#### Naive Baseline Model
+
+The first step to prediction is to calculate the average rating of all movies(mu). From the train dataset, the mean of ratings is `r mu`.
+
+
+
+#### Naive Mean-Baseline Model
+
+Our next approach is to apply our RMSE formula to mu. The formula used is:
+
+$$Y_{u,i} = \hat{\mu} + \varepsilon_{u,i}$$
+with $\hat{\mu}$ as the mean(mu) and $\varepsilon_{u,i}$ as independent errors centered at 0.
+```{r, echo=FALSE}
+base_rmse <- RMSE(mu,test$rating)
+```
+
+The RMSE using the test dataset with this model is `r base_rmse`. Since this is result is above the target RMSE of < 0.86490, further modeling needs to be applied.
+
+
+
+#### Adding Movie Effect
+
+```{r, echo=FALSE}
+#This calculates the movie effect(bi) using Least Squares approximation
+movie_bi <- train %>% 
+  group_by(movieId) %>% 
+  summarize(bi = mean(rating - mu))
+
+#Movie effect RMSE results
+
+bi_rating <- test %>% 
+  left_join(movie_bi, by='movieId') %>%
+  mutate(movie_pred = mu + bi)%>%
+  pull(movie_pred)
+bi_rmse <- RMSE(bi_rating, test$rating)
+
+```
+The next predictor considers the effect of individual movies; some movies are rated higher than others. The addition of $b_i$ accounts for movie effect with this formula:
+
+$$Y_{u,i} = \hat{\mu} + b_i + \epsilon_{u,i}$$
+
+The RMSE result using the test dataset on the movie effect model is `r bi_rmse`. Since this result is still above the target RMSE of < 0.86490, further predictors are considered.
+
+
+
+#### Adding User Effect
+
+```{r, echo=FALSE}
+#This calculates the user effect(bu) using Least Squares approximation.
+
+user_bu <- train %>% 
+  left_join(movie_bi, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(bu = mean(rating - mu - bi))
+
+#User and Movie effect RMSE results
+
+bi_bu_rating <- test %>% 
+  left_join(movie_bi, by='movieId') %>%
+  left_join(user_bu, by='userId') %>%
+  mutate(predict = mu + bi + bu) %>%
+  pull(predict)
+bu_rmse <- RMSE(bi_bu_rating, test$rating)
+```
+Based on the user/ratings plot, there is a user effect. Users are all different and rate movies differently. Our next model adds movie effect(bu) to our model with the following formula:
+
+$$Y_{u,i} = \hat{\mu} + b_i + b_u + \epsilon_{u,i}$$
+
+The RMSE result using the test dataset on the user effect model is `r bu_rmse`. This is result is getting better, but still above the target RMSE so further predictors are added.
+
+
+
+#### Adding Genre Effect
+
+
+```{r, echo=FALSE}
+#mu(mean of train$rating) was used to compare with mu_g(mean of train_genre$rating)due to increased number of rows in train_genre table. RMSE results were slightly lower using mu_g over mu in train_genre as expected
+
+genre_bg <- train_genre %>% 
+  left_join(movie_bi, by='movieId') %>%
+  left_join(user_bu, by='userId') %>%
+  group_by(genres) %>%
+  summarize(bg = mean(rating - mu - bi - bu))
+
+#User, Movie, and Genre mu effect RMSE results
+
+bi_bu_bg_ratings <- test_genre %>% 
+  left_join(movie_bi, by='movieId') %>%
+  left_join(user_bu, by='userId') %>%
+  left_join(genre_bg, by='genres') %>%
+  #opted to use mu for test set
+  mutate(predict = mu + bi + bu + bg) %>%
+  pull(predict)
+
+bg_rmse <- RMSE(bi_bu_bg_ratings, test_genre$rating)
+
+#Add Genre effect(bg)with mu_g
+#this step was added to compare to prior calculation that used mu
+
+mu_g <- mean(train_genre$rating)
+
+genre_bg_mug <- train_genre %>% 
+  left_join(movie_bi, by='movieId') %>%
+  left_join(user_bu, by='userId') %>%
+  group_by(genres) %>%
+  summarize(bg = mean(rating - mu_g - bi - bu))
+
+#User, Movie, and Genre mu_g effect RMSE results
+
+bi_bu_bg_ratings_mug <- test_genre %>% 
+  left_join(movie_bi, by='movieId') %>%
+  left_join(user_bu, by='userId') %>%
+  left_join(genre_bg_mug, by='genres') %>%
+  mutate(predict = mu_g + bi + bu + bg) %>%
+  pull(predict)
+
+bg_rmse_mug <- RMSE(bi_bu_bg_ratings_mug, test_genre$rating)
+```
+Previous plots demonstrate a potential genre effect on movie predictions. Since the original dataset (edx) included combined genres, calculations are performed on combined genres as well as each genre. Additionally,  mu (mean of the train set) was used to compare with mu_g (mean of train_genre set) due to increased number of rows in train_genre table. 
+
+The mean of the original train set(mu) is `r mu` and the mean of the genre training set that is split into separate rows is `r mu_g`
+
+This model adds the genre effect(bg) to our previous model:
+
+$$Y_{u,i} = \hat{\mu} + b_i + b_u + b_g + \epsilon_{u,i}$$
+
+The RMSE result using the test dataset with mu on the genre effect model is `r bg_rmse`. Using the rating average on the genre set with separated rows with mu_g is also `r bg_rmse_mug`. Continued modeling will include both approaches to detect any variability in regularization.
+
+
+
+#### Regularization
+
+Since many ratings in the data set come from a small sample size for all three predictors, a penalty (lambda) will be added. Regularization will be used to limit the total variability of effect size. 
+
+The formula for movie effect penalty includes n, which is the number of ratings made for movie i. When the number of ratings for a movie is large, the penalty is negligible.  
+
+$$\hat{b_{i}} (\lambda) = \frac{1}{\lambda + n_{i}} \sum_{u=1}^{n_{i}} (Y_{u,i} - \hat{\mu}) $$
+
+The penalty(lambda) was selected using cross-validation from the series of possibilities including numbers 0 to 10 with divisions at .25. This series produced acceptable tuning parameters for all three models.   
+```{r, echo=FALSE}
+lambda <- seq(0, 10, 0.25)
+
+#Finding the best penalty (lambda) for movie effect
+
+movie_bi_r <- sapply(lambda, function(x){
+  mu <- 
+    mean(train$rating)
+  m_bi <-
+    train %>% 
+    group_by(movieId) %>% 
+    summarize(m_bi = sum(rating - mu)/(n()+x))
+  
+  predicted <-
+    test %>% 
+    left_join(m_bi, by='movieId') %>%
+    mutate(movie_pred = mu + m_bi)%>%
+    pull(movie_pred)
+  
+  return(RMSE(predicted, test$rating))
+})
+
+#Optimal penalty (lambda) for movie predictor
+
+lambda_movie <- lambda[which.min(movie_bi_r)] 
+
+#Best RMSE 
+
+bi_reg_rmse <- min(movie_bi_r)
+```
+\pagebreak
+The first model, using movie effect as the predictor, returned a lambda value of `r lambda_movie` with the updated RSME at `r bi_reg_rmse`. Visualizing this also shows that the selected series of possibilities includes the minimum value for lambda.  
+
+```{r, echo=FALSE}
+#Visualize best lambda for movie predictor indicates minimum lambda
+
+qplot(lambda,movie_bi_r)
+```
+```{r, echo=FALSE}
+#Finding the best penalty (lambda) for user effect
+
+user_bu_r <- sapply(lambda, function(x){
+  mu <- 
+    mean(train$rating)
+  m_bi <-
+    train %>% 
+    group_by(movieId) %>% 
+    summarize(m_bi = sum(rating - mu)/(n()+x))
+  m_bu <-
+    train %>%
+    left_join(m_bi, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(m_bu = sum(rating - mu - m_bi)/(n()+x))
+  
+  predicted <-
+    test %>% 
+    left_join(m_bi, by='movieId') %>%
+    left_join(m_bu, by="userId") %>%
+    mutate(movie_pred = mu + m_bi + m_bu)%>%
+    pull(movie_pred)
+  
+  return(RMSE(predicted, test$rating))
+})
+
+#Optimal penalty (lambda) for user predictor
+
+lambda_user <- lambda[which.min(user_bu_r)] 
+
+#Best RMSE
+
+bu_reg_rmse <- min(user_bu_r)
+
+```
+\pagebreak
+The second model, adding user effect, returned a lambda value of `r lambda_user` with the RMSE user effect adding regularization at `r bu_reg_rmse`. Visualizing this also shows that the selected series of possibilities includes the minimum value of lambda for user effect. 
+
+```{r, echo=FALSE}
+#Visualized best lambda for user effect indicates minimum lambda
+
+qplot(lambda,user_bu_r)
+```
+```{r, echo=FALSE}
+#Finding the best penalty (lambda) for genre effect with mu
+
+genre_bg_r_mu <- sapply(lambda, function(x){
+  mu <- 
+    mean(train$rating)
+  m_bi <-
+    train %>% 
+    group_by(movieId) %>% 
+    summarize(m_bi = sum(rating - mu)/(n()+x))
+  m_bu <-
+    train %>%
+    left_join(m_bi, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(m_bu = sum(rating - mu - m_bi)/(n()+x))
+  m_bg <-
+    train_genre %>%
+    left_join(m_bi, by="movieId") %>%
+    left_join(m_bu, by="userId") %>%
+    group_by(genres) %>%
+    summarize(m_bg = sum(rating - mu - m_bi - m_bu)/(n()+x))
+  
+  predicted <-
+    test_genre %>% 
+    left_join(m_bi, by='movieId') %>%
+    left_join(m_bu, by="userId") %>%
+    left_join(m_bg, by="genres") %>%
+    mutate(movie_pred = mu + m_bi + m_bu + m_bg)%>%
+    pull(movie_pred)
+  
+  return(RMSE(predicted, test_genre$rating))
+})
+
+#Optimal penalty (lambda) for genre predictor
+
+lambda_genre_mu <- lambda[which.min(genre_bg_r_mu)] 
+
+#Best RMSE
+
+bg_reg_rmse_mu <- min(genre_bg_r_mu)
+
+```
+\pagebreak
+The final model, which adds genre effect with regularization, was determined by comparing RSME results for average rating scores of mu (average rating) of the train set and mu_g (average rating) of the train_genre set.
+
+The model using genre effect with mu returned a lambda value of `r lambda_genre_mu` with the RMSE regularization at `r bg_reg_rmse_mu`. Visualizing this also shows that the selected series of possibilities includes the minimum value of lambda for user effect. 
+
+```{r, echo=FALSE}
+#Visualized best lambda for genre effect using mu indicates minimum lambda
+
+qplot(lambda,genre_bg_r_mu)
+```
+```{r, echo=FALSE}
+#Finding the best penalty (lambda) for genre effect with mu_g
+#mu_g used for train_genre because RMSE was lower than mu
+
+genre_bg_r <- sapply(lambda, function(x){
+  mu <- 
+    mean(train$rating)
+  mu_g <-
+    mean(train_genre$rating)
+  m_bi <-
+    train %>% 
+    group_by(movieId) %>% 
+    summarize(m_bi = sum(rating - mu)/(n()+x))
+  m_bu <-
+    train %>%
+    left_join(m_bi, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(m_bu = sum(rating - mu - m_bi)/(n()+x))
+  m_bg <-
+    train_genre %>%
+    left_join(m_bi, by="movieId") %>%
+    left_join(m_bu, by="userId") %>%
+    group_by(genres) %>%
+    summarize(m_bg = sum(rating - mu_g - m_bi - m_bu)/(n()+x))
+  
+  predicted <-
+    test_genre %>% 
+    left_join(m_bi, by='movieId') %>%
+    left_join(m_bu, by="userId") %>%
+    left_join(m_bg, by="genres") %>%
+    mutate(movie_pred = mu_g + m_bi + m_bu + m_bg)%>%
+    pull(movie_pred)
+  
+  return(RMSE(predicted, test_genre$rating))
+})
+
+#Optimal penalty (lambda) for genre predictor is 5
+
+lambda_genre_mug <- lambda[which.min(genre_bg_r)] 
+bg_reg_rmse <- min(genre_bg_r)
+
+```
+\pagebreak
+The model using genre effect with mu_g, average rating of the genre train set, returned a lambda value of `r lambda_genre_mug`. Visualizing this also shows that the selected series of possibilities includes the minimum value of lambda for user effect.
+
+```{r, echo=FALSE}
+#Visualize best lambda for genre effect indicates minimum lambda
+
+qplot(lambda,genre_bg_r)
+
+```
+
+The RMSE regularization with this model is `r bg_reg_rmse`. When adding additional decimal places, this result is slightly better than mu genre effect and will be used for the final model.
+
+```{r, echo=FALSE}
+best_train_rmse_mu <-
+  tibble(Method = "Regularized Movie+User+Genre With mu",
+         RMSE = format(bg_reg_rmse_mu, digits=12))
+
+best_train_rmse <- bind_rows(best_train_rmse_mu,
+            data_frame(Method="Regularized Movie+User+Genre With mu_g",
+                       RMSE = format(bg_reg_rmse, digits=12 )))
+best_train_rmse %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = "condensed",
+                latex_options = "hold_position",
+                full_width = FALSE,
+                font_size = 12)
+
+```
+
+\pagebreak
+
+# 3. Results
+
+The final step is evaluating the RMSE of the final algorithm to the final hold-out, the validation dataset. This is the only time the validation set has been used in this project. All prior RMSE scores were obtained using the train and test datasets. As the final RMSE score shows, the final model exceeds expectations of RMSE < 0.86490 for this movie recommendation model.
+
+```{r, echo=FALSE}
+#Apply final model to Validation set
+#assign best lambda for each prediction
+movie_lambda <- lambda[which.min(movie_bi_r)] 
+user_lambda <- lambda[which.min(user_bu_r)] 
+genre_lambda <- lambda[which.min(genre_bg_r)]
+
+#mu_g was used for genre prediction only. This was selected because it produced a slightly lower RMSE in test dataset compared to mu. Calculations using mu only also produced results acceptable for RSME number.
+
+#This is the final model  
+
+m_bi <-
+  train %>% 
+  group_by(movieId) %>% 
+  summarize(m_bi = sum(rating - mu)/(n()+movie_lambda))
+m_bu <-
+  train %>%
+  left_join(m_bi, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(m_bu = sum(rating - mu - m_bi)/(n()+user_lambda))
+m_bg <-
+  train_genre %>%
+  left_join(m_bi, by="movieId") %>%
+  left_join(m_bu, by="userId") %>%
+  group_by(genres) %>%
+  summarize(m_bg = sum(rating - mu_g - m_bi - m_bu)/(n()+genre_lambda))
+
+#Here is the final prediction
+#validation_genre dataset used here to account for extra rows in m_bg prediction. Individual genre predictions were averaged for each user/movie combination to test against untouched validation dataset for final RMSE score.
+
+#This is the first time the validation dataset is used.
+m_bg_mean <-
+  validation_genre %>% 
+  left_join(m_bi, by='movieId') %>%
+  left_join(m_bu, by="userId") %>%
+  left_join(m_bg, by="genres") %>%
+  group_by(userId, movieId) %>%
+  mutate(mean_bg = mean(m_bg))%>%
+  select(userId, movieId, mean_bg) %>%
+  distinct(mean_bg)%>%
+#Here are final predictions to test against original validation dataset.
+  left_join(m_bi, by='movieId')%>%
+  left_join(m_bu, by="userId")%>%
+  mutate(movie_pred = mu_g + m_bi + m_bu + mean_bg)%>%
+  pull(movie_pred)
+
+#Final RMSE result obtained from original validation dataset. This RMSE passes assignment requirement for full credit.
+
+final_rmse <- RMSE(m_bg_mean, validation$rating)
+
+final_rmse_validation <-
+  tibble(Conclusion = "Final Model Used On Validation Set",
+         RMSE = format(final_rmse, digits = 5)) %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped","condensed"),
+                latex_options = "hold_position",
+                font_size = 14) %>%
+  column_spec(2, bold = T, color = "blue")
+  
+final_rmse_validation
+```
+
+# 4. Conclusion
+
+###   4.1 Summary of Findings
+
+This study successfully trained a machine learning algorithm to predict movie ratings with a final RMSE value of `r format(final_rmse, digits = 5)`. Predictions used for this model included three predictors: movie effect, user effect, and genre effect. The movie effect indicated that some movies are better than others and receive higher ratings, and others are worse and get lower reviews. User effect showed that some users give higher ratings than others and genre effect demonstrated that some genres receive higher reviews than others. 
+
+Regularization was used on all three predictors to account for differences in sample size. This approach was successful as RMSE results were lower when regularization was applied to all predictors. 
+
+The following table shows RMSE results modeled with the train set and substantiated with the test set.
+
+```{r, echo=FALSE}
+options(digits = 12)
+train_rmse_table <- data_frame(Test_Prediction =
+                                 c("Basic average",
+                                   "Movie effect",
+                                   "User effect",
+                                   "Genre mu effect",
+                                   "Genre mu_g effect",
+                                   "Regularized movie effect",
+                                   "Regularized user effect", "Regularized mu genre effect",
+                                   "Regularized mu_g genre effect"),
+                               RMSE = c(base_rmse, bi_rmse,
+                                        bu_rmse, bg_rmse,
+                                        bg_rmse_mug, bi_reg_rmse,
+                                        bu_reg_rmse,
+                                        bg_reg_rmse_mu,
+                                        bg_reg_rmse))
+train_rmse_table %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                latex_options = "hold_position",
+                full_width = FALSE,
+                font_size = 12)
+```
+
+From here, the final model was applied to the validation set where the RMSE result confirms a successful movie prediction algorithm.
+
+```{r, echo=FALSE}
+#Table of final model using validation to compare with above table
+
+final_rmse_validation_compare <-
+  tibble(Validation_Prediction = "Final Model Used On Validation Set",
+         RMSE = format(final_rmse, digits = 12)) %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                latex_options = "hold_position",
+                font_size = 16) %>%
+  column_spec(2, bold = T, color = "blue")
+  
+final_rmse_validation_compare
+```
+
+###   4.2 Limitations
+
+One challenge with this study was the size of the dataset. Many processes were slow and better lambda values may have been found through further calculations. Also, including additional predictors to the dataset would have been interesting (e.g. age of user, gender of user, producer of movie, money spent to make the movie).
+
+###   4.3 Recommendations for Future Study
+
+Future studies may consider potential predictors from the year movie was released, year movie was rated, hour of day the movie was rated, and month of year the movie was rated. Section 2.2 of this paper, Data Exploration and Visualization, included promising visual analysis of these potential predictors that weren't included in this model prediction.
